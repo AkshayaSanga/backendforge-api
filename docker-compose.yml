@@ -1,0 +1,105 @@
+services:
+
+  # ── API ────────────────────────────────────────────────────────
+  api:
+    build: .
+    container_name: backendforge_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/backendforge
+      SYNC_DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/backendforge
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./uploads:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - backendforge_net
+
+  # ── Celery Worker ──────────────────────────────────────────────
+  worker:
+    build: .
+    container_name: backendforge_worker
+    restart: unless-stopped
+    command: celery -A app.services.email_service.celery_app worker --loglevel=info --concurrency=2
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/backendforge
+      SYNC_DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/backendforge
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - backendforge_net
+
+  # ── Migrations (runs once, then exits) ────────────────────────
+  migrate:
+    build: .
+    container_name: backendforge_migrate
+    command: alembic upgrade head
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/backendforge
+      SYNC_DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/backendforge
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - backendforge_net
+    restart: "no"
+
+  # ── PostgreSQL ─────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: backendforge_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: backendforge
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d backendforge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - backendforge_net
+
+  # ── Redis ──────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: backendforge_redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - backendforge_net
+
+volumes:
+  pg_data:
+  redis_data:
+
+networks:
+  backendforge_net:
+    driver: bridge
